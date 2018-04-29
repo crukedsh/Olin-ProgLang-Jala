@@ -1,6 +1,6 @@
 /************************************************************
 
-HOMEWORK 5
+FINAL PROJECT
 
 Team members: Zhengyang Feng, Hong Giap Tee
 
@@ -44,7 +44,7 @@ abstract class Value {
     def isString () : Boolean = false
     def isVector () : Boolean = false
     def isFunction () : Boolean = false
-    def isDict () : Boolean = false
+    //    def isDict () : Boolean = false
     def isNone () : Boolean = false
 
     def error (msg : String) : Nothing = {
@@ -60,15 +60,11 @@ abstract class Value {
     }
 
     def getBool () : Boolean = {
-        throw new Exception("Value not of type BOOLEAN")
+        throw new Exception("Value not of type INTEGER; cannot convert to BOOLEAN")
     }
 
     def getList () : List[Value] = {
         throw new Exception("Value not of type VECTOR")
-    }
-
-    def getMap () : Map[Value, Value] = {
-        throw new Exception("Value not of type DICT")
     }
 
     def apply (args: List[Value]) : Value =  {
@@ -99,22 +95,10 @@ abstract class Value {
         }
     }
 
-    def checkDict () : Unit = {
-        if (!isDict()) {
-            error("Value not of type DICT")
-        }
-    }
-
     def checkFunction () : Unit = {
         if (!isFunction()) {
             error("Value not of type FUNCTION")
         }
-    }
-
-    def getDimension: Int = {
-        if (isVector())
-            getList().head.getDimension + 1
-        else 0
     }
 
 }
@@ -130,8 +114,10 @@ class VNone () extends Value {
 class VInteger (val i:Int) extends Value {
 
     override def toString () : String = i.toString()
+    override def isBoolean(): Boolean = true
     override def isInteger () : Boolean = true
     override def getInt () : Int = i
+    override def getBool () : Boolean = i != 0
 
 }
 
@@ -141,13 +127,6 @@ class VString (val s:String) extends Value {
     override def isString () : Boolean = true
     override def getString () : String = s
 
-}
-
-class VBoolean (val b:Boolean) extends Value {
-
-    override def toString () : String = b.toString()
-    override def isBoolean () : Boolean = true
-    override def getBool () : Boolean = b
 }
 
 
@@ -164,15 +143,6 @@ class VNoun (override val l: List[Value]) extends VVector(l) {
 
 }
 
-class VDict (val m:Map[Value, Value]) extends Value {
-
-    override def toString () : String =
-        return m.map(_.productIterator.mkString(" : ")).
-            addString(new StringBuilder(), "{ ", " , ", " }").toString()
-
-    override def isDict () : Boolean = true
-    override def getMap () : Map[Value, Value] = m
-}
 
 class VPrimOp (val oper : (List[Value]) => Value) extends Value {
 
@@ -340,26 +310,26 @@ object Ops {
         val v2 = vs(1)
 
         if (v1.isBoolean() && v2.isBoolean()) {
-            return new VBoolean(v1.getBool() == v2.getBool())
+            return new VInteger(if (v1.getBool() == v2.getBool()) 1 else 0)
         } else if (v1.isInteger() && v2.isInteger()) {
-            return new VBoolean(v1.getInt() == v2.getInt())
+            return new VInteger(if (v1.getInt() == v2.getInt()) 1 else 0)
         } else if (v1.isString() && v2.isString()) {
-            return new VBoolean(v1.getString() == v2.getString())
+            return new VInteger(if (v1.getString() == v2.getString()) 1 else 0)
         } else if (v1.isVector() && v2.isVector()) {
             if (v1.getList().length == v2.getList().length) {
                 for ((vv1,vv2) <- v1.getList().zip(v2.getList())) {
                     if (!operEqual(List(vv1,vv2)).getBool()) {
-                        return new VBoolean(false)
+                        return new VInteger(0)
                     }
                 }
-                return new VBoolean(true)
+                return new VInteger(1)
             } else {
-                return new VBoolean(false)
+                return new VInteger(0)
             }
         } else if (v1.isFunction() && v2.isFunction()) {
-            return new VBoolean(v1==v2)
+            return new VInteger(if (v1 == v2) 1 else 0)
         } else {
-            return new VBoolean(false)
+            return new VInteger(0)
         }
     }
 
@@ -373,7 +343,7 @@ object Ops {
         v1.checkInteger()
         v2.checkInteger()
 
-        return new VBoolean(v1.getBool() < v2.getBool())
+        return new VInteger(if (v1.getBool() < v2.getBool()) 1 else 0)
     }
 
     def operVector (vs: List[Value]) : Value = {
@@ -381,9 +351,6 @@ object Ops {
         return new VVector(vs)
     }
 
-    def operDict (ds: List[Value]) : Value = {
-        return new VDict(ds.grouped(2).toList.map(t =>(t(0),t(1))).toMap)
-    }
 
 
     def operEmpty (vs : List[Value]) : Value = {
@@ -391,7 +358,7 @@ object Ops {
         checkArgsLength(vs,1,1)
         val v = vs(0)
         v.checkVector()
-        return new VBoolean(v.getList().length == 0)
+        return new VInteger(if (v.getList().length == 0) 1 else 0)
     }
 
 
@@ -425,19 +392,6 @@ object Ops {
         val vec = vs(1)
         vec.checkVector()
         return new VVector(item::vec.getList())
-    }
-
-    def operSub (vs : List[Value]) : Value = {
-        checkArgsLength(vs,2,2)
-        val dict = vs(0)
-        val key = vs(1)
-        dict.checkDict()
-        for ((k, v) <- dict.getMap()) {
-            if (Ops.operEqual(List(key,k)).getBool())
-                return v
-        }
-        runtimeError("Key "+ key + " not found")
-        new VNone
     }
 }
 
@@ -644,12 +598,6 @@ class SExpParser extends RegexParsers {
     def key_value : Parser[(Exp, Exp)] =
         LP ~ expr ~ expr ~ RP ^^ { case _ ~ k ~ v ~ _ => (k, v) }
 
-    def expr_dict : Parser[Exp] =
-        LP ~ DICT ~ rep(key_value) ~ RP ^^ {
-            case _ ~ _ ~ wrap ~ _ =>
-                new EApply(new ELiteral(new VPrimOp(Ops.operDict)),
-                    wrap.flatMap(t => List(t._1, t._2)))
-        }
 
     def expr_fun : Parser[Exp] =
         LP ~ FUN ~ LP ~ rep(ID) ~ RP ~ expr ~ RP ^^
@@ -668,8 +616,8 @@ class SExpParser extends RegexParsers {
         // is also okay
         // just to fit the result of #parse (and true false)
         case e1 :: Nil => new EIf(e1, new ELiteral(
-            new VBoolean(true)), new ELiteral(new VBoolean(false)))
-        case e1 :: e2 => new EIf(e1, andTokens(e2), new ELiteral(new VBoolean(false)))
+            new VInteger(1)), new ELiteral(new VInteger(0)))
+        case e1 :: e2 => new EIf(e1, andTokens(e2), new ELiteral(new VInteger(0)))
         case Nil => throw new Exception("Empty Boolean expression for and")
     }
 
@@ -678,8 +626,8 @@ class SExpParser extends RegexParsers {
 
     def orTokens(es : List[Exp]) : Exp = es match {
         case e1 :: Nil => new EIf(e1, new ELiteral(
-            new VBoolean(true)), new ELiteral(new VBoolean(false)))
-        case e1 :: e2 => new EIf(e1, new ELiteral(new VBoolean(true)), orTokens(e2))
+            new VInteger(1)), new ELiteral(new VInteger(0)))
+        case e1 :: e2 => new EIf(e1, new ELiteral(new VInteger(1)), orTokens(e2))
         case Nil => throw new Exception("Empty Boolean expression for or")
     }
 
@@ -709,7 +657,7 @@ class SExpParser extends RegexParsers {
         LP ~ COND ~ rep(cond) ~ RP ^^ {case _ ~ _ ~ es ~ _ => condTokens(es) }
 
     def expr : Parser[Exp] =
-        ( atomic | expr_if | expr_map | expr_mapfilter | expr_vec | expr_dict |
+        ( atomic | expr_if | expr_map | expr_mapfilter | expr_vec |
             expr_fun | expr_funr | expr_let | expr_and | expr_or | expr_cond | expr_app) ^^
             { e => e }
 
@@ -824,9 +772,9 @@ object Shell {
     //
 
     val stdEnv = new Env(List(
-        ("true",new VBoolean(true)),
-        ("false",new VBoolean(false)),
-        ("not", new VRecClosure("",List("a"), new EIf(new EId("a"), new ELiteral(new VBoolean(false)), new ELiteral(new VBoolean(true))),nullEnv)),
+        ("true",new VInteger(1)),
+        ("false",new VInteger(0)),
+        ("not", new VRecClosure("",List("a"), new EIf(new EId("a"), new ELiteral(new VInteger(0)), new ELiteral(new VInteger(1))),nullEnv)),
         ("+", new VPrimOp(Ops.operPlus)),
         ("*", new VPrimOp(Ops.operTimes)),
         ("=", new VPrimOp(Ops.operEqual)),
@@ -838,7 +786,6 @@ object Shell {
         ("rest",new VPrimOp(Ops.operRest)),
         ("empty",new VVector(List())),
         ("cons",new VPrimOp(Ops.operCons)),
-        ("sub",new VPrimOp(Ops.operSub))
     ))
 
 
@@ -850,7 +797,6 @@ object Shell {
             print("FUNC> ")
             try {
                 val input = scala.io.StdIn.readLine()
-                //                val se = new SEexpr(new ELiteral(new VInteger(1)))
                 val se = if (input == "#debug") new SEexpr(
                     new ELiteral(new VInteger(1))
                 )
