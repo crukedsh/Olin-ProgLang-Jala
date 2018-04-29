@@ -541,7 +541,8 @@ class SExpParser extends RegexParsers {
     def TIMES : Parser[Unit] = "*" ^^ { s => () }
     def INT : Parser[Int] = """[0-9]+""".r ^^ { s => s.toInt }
     def IF : Parser[Unit] = "if" ^^ { s => () }
-    def ID : Parser[String] = """[a-zA-Z_+*:.?=<>!|][a-zA-Z0-9_+*:.?=<>!|]*""".r ^^ { s => s }
+    def ID : Parser[String] = """[a-zA-Z][a-zA-Z0-9]*""".r ^^ { s => s }
+    //    def ID : Parser[String] = """[a-zA-Z_+*:.?=<>!|][a-zA-Z0-9_+*:.?=<>!|]*""".r ^^ { s => s }
 
     def COND : Parser[Unit] = "cond" ^^ { s => () }
     def AND : Parser[Unit] = "and" ^^ { s => () }
@@ -562,104 +563,122 @@ class SExpParser extends RegexParsers {
 
     // grammar
 
-    def atomic_int : Parser[Exp] = INT ^^ { i => new ELiteral(new VInteger(i)) }
+    def vector : Parser[Exp] =
+        rep(atomic) ^^ {
+            case es =>  if (es.length == 1)
+                es.head
+            else
+                new EApply(new ELiteral(new VPrimOp(Ops.operVector)),es)
+        }
 
-    def atomic_string : Parser[Exp] = STRING ^^ { s => new ELiteral(new VString(s))}
+    def atomic_int : Parser[Exp] = INT ^^ { i => new ELiteral(new VInteger(i)) }
 
     def atomic_id : Parser[Exp] =
         ID ^^ { s => new EId(s) }
 
     def atomic : Parser[Exp] =
-        ( atomic_int | atomic_id | atomic_string ) ^^ { e => e }
-
-    def expr_if : Parser[Exp] =
-        LP ~ IF ~ expr ~ expr ~ expr ~ RP ^^
-            { case _ ~ _ ~ e1 ~ e2 ~ e3 ~ _ => new EIf(e1,e2,e3) }
-
-    def expr_map : Parser[Exp] =
-        LB ~ expr ~ BAR ~ ID ~ GETS ~ expr ~ RB ^^
-            { case _ ~ e1 ~ _ ~ id ~ _ ~ e2 ~ _ =>
-                new EApply(new ELiteral(new VPrimOp(Ops.operMap)),List(new EFunction(List(id),e1), e2)) }
-
-    def expr_mapfilter : Parser[Exp] =
-        LB ~ expr ~ BAR ~ ID ~ GETS ~ expr ~ BAR ~ expr ~ RB ^^
-            { case _ ~ e1 ~ _ ~ id ~ _ ~ e2 ~ _ ~ e3 ~ _ =>
-                new EApply(new ELiteral(new VPrimOp(Ops.operMap)),
-                    List(new EFunction(List(id),e1),
-                        new EApply(new ELiteral(new VPrimOp(Ops.operFilter)),
-                            List(new EFunction(List(id),e3),
-                                e2)))) }
-
-    def expr_vec : Parser[Exp] =
-        LB ~ rep(expr) ~ RB ^^ {
-            case _ ~ es ~ _ => new EApply(new ELiteral(new VPrimOp(Ops.operVector)),es)
-        }
-
-    def key_value : Parser[(Exp, Exp)] =
-        LP ~ expr ~ expr ~ RP ^^ { case _ ~ k ~ v ~ _ => (k, v) }
+        ( atomic_int | atomic_id ) ^^ { e => e }
 
 
-    def expr_fun : Parser[Exp] =
-        LP ~ FUN ~ LP ~ rep(ID) ~ RP ~ expr ~ RP ^^
-            { case _ ~ _ ~ _ ~ params ~ _ ~ e ~ _ => new EFunction(params,e) }
+    //
+    //    def atomic_string : Parser[Exp] = STRING ^^ { s => new ELiteral(new VString(s))}
+    //
 
-    def expr_funr : Parser[Exp] =
-        LP ~ FUN ~ ID ~ LP ~ rep(ID) ~ RP ~ expr ~ RP ^^
-            { case _ ~ _ ~ self ~ _ ~ params ~ _ ~ e ~ _ => new ERecFunction(self,params,e) }
-
-    def expr_app : Parser[Exp] =
-        LP ~ expr ~ rep(expr) ~ RP ^^ { case _ ~ ef ~ eargs ~ _ => new EApply(ef,eargs) }
-
-    def andTokens(es : List[Exp]) : Exp = es match {
-        // here
-        //     case e1 :: Nil => e1
-        // is also okay
-        // just to fit the result of #parse (and true false)
-        case e1 :: Nil => new EIf(e1, new ELiteral(
-            new VInteger(1)), new ELiteral(new VInteger(0)))
-        case e1 :: e2 => new EIf(e1, andTokens(e2), new ELiteral(new VInteger(0)))
-        case Nil => throw new Exception("Empty Boolean expression for and")
-    }
-
-    def expr_and : Parser[Exp] =
-        LP ~ AND ~ rep(expr) ~ RP ^^ { case _ ~ _ ~ es ~ _ => andTokens(es) }
-
-    def orTokens(es : List[Exp]) : Exp = es match {
-        case e1 :: Nil => new EIf(e1, new ELiteral(
-            new VInteger(1)), new ELiteral(new VInteger(0)))
-        case e1 :: e2 => new EIf(e1, new ELiteral(new VInteger(1)), orTokens(e2))
-        case Nil => throw new Exception("Empty Boolean expression for or")
-    }
-
-    def expr_or : Parser[Exp] =
-        LP ~ OR ~ rep(expr) ~ RP ^^ { case _ ~ _ ~ es ~ _ => orTokens(es) }
-
-    def binding : Parser[(String, Exp)] =
-        LP ~ ID ~ expr ~ RP ^^ { case _ ~ id ~ e ~ _ => (id, e) }
-
-    def expr_let : Parser[Exp] =
-        LP ~ LET ~ LP ~ rep(binding) ~ RP ~ expr ~ RP ^^ {
-            case _ ~ _ ~ _ ~ wrap ~ _ ~ e ~ _ =>
-                val (pars, efs) = wrap.unzip
-                new EApply(new EFunction(pars, e), efs)
-        }
-
-    def cond : Parser[(Exp, Exp)] =
-        LP ~ expr ~ expr ~ RP ^^ { case _ ~ e1 ~ e2 ~ _ => (e1, e2) }
-
-    def condTokens(es : List[(Exp, Exp)]) : Exp = es match {
-        case (e1, e2) :: Nil => new EIf(e1, e2, new ELiteral(new VNone))
-        case (e1, e2) :: e3 => new EIf(e1, e2, condTokens(e3))
-        case Nil => throw new Exception("Empty Boolean expression for cond")
-    }
-
-    def expr_cond : Parser[Exp] =
-        LP ~ COND ~ rep(cond) ~ RP ^^ {case _ ~ _ ~ es ~ _ => condTokens(es) }
+    //
+    //    def atomic : Parser[Exp] =
+    //        ( atomic_int | atomic_id | atomic_string ) ^^ { e => e }
+    //
+    //    def expr_if : Parser[Exp] =
+    //        LP ~ IF ~ expr ~ expr ~ expr ~ RP ^^
+    //            { case _ ~ _ ~ e1 ~ e2 ~ e3 ~ _ => new EIf(e1,e2,e3) }
+    //
+    //    def expr_map : Parser[Exp] =
+    //        LB ~ expr ~ BAR ~ ID ~ GETS ~ expr ~ RB ^^
+    //            { case _ ~ e1 ~ _ ~ id ~ _ ~ e2 ~ _ =>
+    //                new EApply(new ELiteral(new VPrimOp(Ops.operMap)),List(new EFunction(List(id),e1), e2)) }
+    //
+    //    def expr_mapfilter : Parser[Exp] =
+    //        LB ~ expr ~ BAR ~ ID ~ GETS ~ expr ~ BAR ~ expr ~ RB ^^
+    //            { case _ ~ e1 ~ _ ~ id ~ _ ~ e2 ~ _ ~ e3 ~ _ =>
+    //                new EApply(new ELiteral(new VPrimOp(Ops.operMap)),
+    //                    List(new EFunction(List(id),e1),
+    //                        new EApply(new ELiteral(new VPrimOp(Ops.operFilter)),
+    //                            List(new EFunction(List(id),e3),
+    //                                e2)))) }
+    //
+    //    def expr_vec : Parser[Exp] =
+    //        LB ~ rep(expr) ~ RB ^^ {
+    //            case _ ~ es ~ _ => new EApply(new ELiteral(new VPrimOp(Ops.operVector)),es)
+    //        }
+    //
+    //    def key_value : Parser[(Exp, Exp)] =
+    //        LP ~ expr ~ expr ~ RP ^^ { case _ ~ k ~ v ~ _ => (k, v) }
+    //
+    //
+    //    def expr_fun : Parser[Exp] =
+    //        LP ~ FUN ~ LP ~ rep(ID) ~ RP ~ expr ~ RP ^^
+    //            { case _ ~ _ ~ _ ~ params ~ _ ~ e ~ _ => new EFunction(params,e) }
+    //
+    //    def expr_funr : Parser[Exp] =
+    //        LP ~ FUN ~ ID ~ LP ~ rep(ID) ~ RP ~ expr ~ RP ^^
+    //            { case _ ~ _ ~ self ~ _ ~ params ~ _ ~ e ~ _ => new ERecFunction(self,params,e) }
+    //
+    //    def expr_app : Parser[Exp] =
+    //        LP ~ expr ~ rep(expr) ~ RP ^^ { case _ ~ ef ~ eargs ~ _ => new EApply(ef,eargs) }
+    //
+    //    def andTokens(es : List[Exp]) : Exp = es match {
+    //        // here
+    //        //     case e1 :: Nil => e1
+    //        // is also okay
+    //        // just to fit the result of #parse (and true false)
+    //        case e1 :: Nil => new EIf(e1, new ELiteral(
+    //            new VInteger(1)), new ELiteral(new VInteger(0)))
+    //        case e1 :: e2 => new EIf(e1, andTokens(e2), new ELiteral(new VInteger(0)))
+    //        case Nil => throw new Exception("Empty Boolean expression for and")
+    //    }
+    //
+    //    def expr_and : Parser[Exp] =
+    //        LP ~ AND ~ rep(expr) ~ RP ^^ { case _ ~ _ ~ es ~ _ => andTokens(es) }
+    //
+    //    def orTokens(es : List[Exp]) : Exp = es match {
+    //        case e1 :: Nil => new EIf(e1, new ELiteral(
+    //            new VInteger(1)), new ELiteral(new VInteger(0)))
+    //        case e1 :: e2 => new EIf(e1, new ELiteral(new VInteger(1)), orTokens(e2))
+    //        case Nil => throw new Exception("Empty Boolean expression for or")
+    //    }
+    //
+    //    def expr_or : Parser[Exp] =
+    //        LP ~ OR ~ rep(expr) ~ RP ^^ { case _ ~ _ ~ es ~ _ => orTokens(es) }
+    //
+    //    def binding : Parser[(String, Exp)] =
+    //        LP ~ ID ~ expr ~ RP ^^ { case _ ~ id ~ e ~ _ => (id, e) }
+    //
+    //    def expr_let : Parser[Exp] =
+    //        LP ~ LET ~ LP ~ rep(binding) ~ RP ~ expr ~ RP ^^ {
+    //            case _ ~ _ ~ _ ~ wrap ~ _ ~ e ~ _ =>
+    //                val (pars, efs) = wrap.unzip
+    //                new EApply(new EFunction(pars, e), efs)
+    //        }
+    //
+    //    def cond : Parser[(Exp, Exp)] =
+    //        LP ~ expr ~ expr ~ RP ^^ { case _ ~ e1 ~ e2 ~ _ => (e1, e2) }
+    //
+    //    def condTokens(es : List[(Exp, Exp)]) : Exp = es match {
+    //        case (e1, e2) :: Nil => new EIf(e1, e2, new ELiteral(new VNone))
+    //        case (e1, e2) :: e3 => new EIf(e1, e2, condTokens(e3))
+    //        case Nil => throw new Exception("Empty Boolean expression for cond")
+    //    }
+    //
+    //    def expr_cond : Parser[Exp] =
+    //        LP ~ COND ~ rep(cond) ~ RP ^^ {case _ ~ _ ~ es ~ _ => condTokens(es) }
+    //
+    //    def expr : Parser[Exp] =
+    //        ( atomic | expr_if | expr_map | expr_mapfilter | expr_vec |
+    //            expr_fun | expr_funr | expr_let | expr_and | expr_or | expr_cond | expr_app) ^^
+    //            { e => e }
 
     def expr : Parser[Exp] =
-        ( atomic | expr_if | expr_map | expr_mapfilter | expr_vec |
-            expr_fun | expr_funr | expr_let | expr_and | expr_or | expr_cond | expr_app) ^^
-            { e => e }
+        ( vector ) ^^ { e => e }
 
     def expr_entry : Parser[ShellEntry] =
         expr ^^ { e => new SEexpr(e) }
@@ -781,7 +800,7 @@ object Shell {
         ("<", new VPrimOp(Ops.operLess)),
         ("map", new VPrimOp(Ops.operMap)),
         ("filter", new VPrimOp(Ops.operFilter)),
-        ("empty?",new VPrimOp(Ops.operEmpty)),
+        ("ifempty",new VPrimOp(Ops.operEmpty)),
         ("first",new VPrimOp(Ops.operFirst)),
         ("rest",new VPrimOp(Ops.operRest)),
         ("empty",new VVector(List())),
