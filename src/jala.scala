@@ -113,7 +113,9 @@ class VNone () extends Value {
 
 class VInteger (val i:Int) extends Value {
 
-    override def toString () : String = i.toString()
+    override def toString () : String = {
+        if (i<0) '_' + (-i).toString else i.toString()
+    }
     override def isBoolean(): Boolean = true
     override def isInteger () : Boolean = true
     override def getInt () : Int = i
@@ -222,8 +224,44 @@ object MonadicOps {
         val v = vs.head
         if (v.isInteger()) return new VInteger(-v.getInt())
         else if (v.isVector()) return new VVector(v.getList().map(x => operMinus(List(x))))else {
-            runtimeError("cannot do - \n  " + v)
+            runtimeError("cannot do monadic - \n  " + v)
         }
+    }
+
+    def operTally(vs: List[Value]): Value = {
+        checkArgsLength(vs, 1, 1)
+        new VInteger(
+            if (vs.head.isVector())
+                vs.head.getList().length
+            else 1
+        )
+    }
+
+    def operShapeOf(vs: List[Value]): Value = {
+        checkArgsLength(vs, 1, 1)
+        def shapeOf(vs: List[Value]): Value = {
+            new VVector(
+                if (vs.head.isVector())
+                    new VInteger(vs.head.getList().length) :: shapeOf(vs.head.getList()).getList()
+                else
+                    List()
+            )
+        }
+        shapeOf(vs)
+    }
+
+    def operSum(vs: List[Value]) : Value = {
+        checkArgsLength(vs, 1, 1)
+        def sumOf(vs: List[Value]): Value = {
+            if (vs.isEmpty)
+                new VInteger(0)
+            else
+                DyadicOps.operPlus(List(vs.head,sumOf(vs.tail)))
+        }
+        if (vs.head.isVector())
+            sumOf(vs.head.getList())
+        else
+            vs.head
     }
 
 }
@@ -317,6 +355,38 @@ object DyadicOps {
         } else {
             runtimeError("cannot multiply values of different types")
         }
+    }
+
+
+    def operShape(vs: List[Value]) : Value = {
+        checkArgsLength(vs, 2, 2)
+        var run = 0
+        def bind(e : Value) : List[Value] = {
+            if (e.isVector()) e.getList() else List(e)
+        }
+
+        val v2 = bind(vs(1))
+        var v1 = List[Int]()
+        for (x <- bind(vs(0))) {
+            if (x.getInt() < 1)
+                runtimeError("domain error. one dimension as " + x)
+            if (x.getInt() > 1)
+                v1 = v1 :+ x.getInt()
+        }
+        if (v1.length == 0) return new VInteger(v2.head.getInt())
+        def createShape(v1: List[Int]) : Value = {
+            if (v1.length == 0) {
+                run += 1
+                return new VInteger(v2((run-1) % v2.length).getInt())
+            }
+            var ret = List[Value]()
+            for (i <- 0 until v1.head) {
+                val child = createShape(v1.tail)
+                ret = ret :+ child
+            }
+            return new VVector(ret)
+        }
+        createShape(v1)
     }
 
 }
@@ -589,15 +659,19 @@ class SExpParser extends RegexParsers {
     def RP : Parser[Unit] = ")" ^^ { s => () }
     def LB : Parser[Unit] = "[" ^^ { s => () }
     def RB : Parser[Unit] = "]" ^^ { s => () }
-    def INT : Parser[Int] = """[0-9]+""".r ^^ { s => s.toInt }
-    def IF : Parser[Unit] = "if" ^^ { s => () }
+    def INT : Parser[Int] = """_?[0-9]+""".r ^^ { s => if (s.charAt(0)!='_') s.toInt else -s.substring(1).toInt}
+    //    def IF : Parser[Unit] = "if" ^^ { s => () }
     def ID : Parser[String] = """[a-zA-Z][a-zA-Z0-9]*""".r ^^ { s => s }
     //    def ID : Parser[String] = """[a-zA-Z_+*:.?=<>!|][a-zA-Z0-9_+*:.?=<>!|]*""".r ^^ { s => s }
 
     def PLUS : Parser[String] = "+" ^^ { s => s }
     def MINUS : Parser[String] = "-" ^^ { s => s }
     def TIMES : Parser[String] = "*" ^^ { s => s }
+    def DOLLAR : Parser[String] = "$" ^^{ s => s }
+    def CONTROL : Parser[String] = "#" ^^ { s => s }
+    def SUM : Parser[String] = "+/" ^^ { s => s }
 
+    def ASSIGN : Parser[Unit] = "=." ^^ { s => () }
     //    def COND : Parser[Unit] = "cond" ^^ { s => () }
     //    def AND : Parser[Unit] = "and" ^^ { s => () }
     //    def OR : Parser[Unit] = "or" ^^ { s => () }
@@ -606,13 +680,12 @@ class SExpParser extends RegexParsers {
     //    def BAR : Parser[Unit] = "|" ^^ { s => () }
     //    def GETS : Parser[Unit] = "<-" ^^ { s => () }
 
-    def DEFINE : Parser[Unit] = "define" ^^ { s => () }
-    def DEFUN : Parser[Unit] = "defun" ^^ { s => () }
+    //    def DEFINE : Parser[Unit] = "define" ^^ { s => () }
+    //    def DEFUN : Parser[Unit] = "defun" ^^ { s => () }
 
-    def CONTROL : Parser[Unit] = "#" ^^ { s => () }
 
-    def SUB : Parser[Unit] = "sub" ^^ { s => () }
-    def STRING : Parser[String] = "\"" ~ """[^"]*""".r ~ "\"" ^^ { case _ ~ s ~ _ => s }
+
+    //    def STRING : Parser[String] = "\"" ~ """[^"]*""".r ~ "\"" ^^ { case _ ~ s ~ _ => s }
 
     // grammar
 
@@ -635,14 +708,14 @@ class SExpParser extends RegexParsers {
         }
 
 
-    def MONADIC : Parser[String]  = MINUS ^^ { s => s }
+    def MONADIC : Parser[String]  = ( SUM | MINUS | DOLLAR | CONTROL) ^^ { s => s }
 
-    def DYADIC : Parser[String]  = (PLUS | MINUS | TIMES) ^^ { s => s }
+    def DYADIC : Parser[String]  = (PLUS | MINUS | TIMES | DOLLAR) ^^ { s => s }
     //    def INFIX : Parser[Unit] = "infix" ^^ { s => () }
 
     def pexpr : Parser[Exp] = LP ~ dexpr ~ RP ^^ { case _ ~ e ~ _ => e }
 
-    def mexpr : Parser[Exp] = MONADIC ~ fexpr ^^ {
+    def mexpr : Parser[Exp] = MONADIC ~ dexpr ^^ {
         case e1 ~ e2 =>  new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(e1))),List(e2))
     }
 
@@ -769,22 +842,27 @@ class SExpParser extends RegexParsers {
     //            { e => e }
 
     def expr : Parser[Exp] =
-        ( dexpr | vector  ) ^^ { e => e }
+        ( dexpr ) ^^ { e => e }
+
+    def assign_entry : Parser[ShellEntry] =
+        ID ~ ASSIGN ~ expr ^^ {
+            case id ~ _ ~ e => new SEdefine(id, e)
+        }
 
     def expr_entry : Parser[ShellEntry] =
         expr ^^ { e => new SEexpr(e) }
 
 
-    def define_entry : Parser[ShellEntry] =
-        LP ~ DEFINE ~ ID ~ expr ~ RP ^^ {
-            case _ ~ _ ~ id ~ e ~ _ => new SEdefine(id, e)
-        }
-
-    def defun_entry : Parser[ShellEntry] =
-        LP ~ DEFUN ~ ID ~ LP ~ rep(ID) ~ RP ~ expr ~ RP ^^ {
-            case _ ~ _ ~ fid ~ _ ~ ids ~ _ ~ e ~ _ =>
-                new SEdefine(fid, new ERecFunction(fid, ids, e))
-        }
+    //    def define_entry : Parser[ShellEntry] =
+    //        LP ~ DEFINE ~ ID ~ expr ~ RP ^^ {
+    //            case _ ~ _ ~ id ~ e ~ _ => new SEdefine(id, e)
+    //        }
+    //
+    //    def defun_entry : Parser[ShellEntry] =
+    //        LP ~ DEFUN ~ ID ~ LP ~ rep(ID) ~ RP ~ expr ~ RP ^^ {
+    //            case _ ~ _ ~ fid ~ _ ~ ids ~ _ ~ e ~ _ =>
+    //                new SEdefine(fid, new ERecFunction(fid, ids, e))
+    //        }
 
     def quit_entry : Parser[ShellEntry] =
         "quit" ^^ { case _ => new SEquit() }
@@ -800,7 +878,7 @@ class SExpParser extends RegexParsers {
 
 
     def shell_entry : Parser[ShellEntry] =
-        ( control_entry | define_entry | defun_entry | expr_entry ) ^^ { se => se }
+        ( control_entry | assign_entry | expr_entry ) ^^ { se => se }
 
 
 }
@@ -902,10 +980,14 @@ object Shell {
         "+" -> DyadicOps.operPlus _,
         "-" -> DyadicOps.operMinus _,
         "*" -> DyadicOps.operTimes _,
+        "$" -> DyadicOps.operShape _,
     )
 
     val monadicOpt = Map(
         "-" -> MonadicOps.operMinus _,
+        "#" -> MonadicOps.operTally _,
+        "$" -> MonadicOps.operShapeOf _,
+        "+/" -> MonadicOps.operSum _
     )
 
 
@@ -917,7 +999,7 @@ object Shell {
         var env = stdEnv
 
         while (true) {
-            print("FUNC> ")
+            print("Jala> ")
             try {
                 val input = scala.io.StdIn.readLine()
                 val se = if (input == "#debug") new SEexpr(
