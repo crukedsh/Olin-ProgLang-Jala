@@ -182,29 +182,38 @@ class VRecClosure (val self: String, val params: List[String], val body:Exp, val
 
 object Ops {
 
-    def runtimeError (msg: String) : Nothing = {
+    def runtimeError(msg: String): Nothing = {
 
-        throw new Exception("Runtime error: "+msg)
+        throw new Exception("Runtime error: " + msg)
     }
 
 
-
-    def checkArgsLength (vs:List[Value], min: Int, max : Int) : Unit = {
+    def checkArgsLength(vs: List[Value], min: Int, max: Int): Unit = {
 
         //
         // check whether an argument list has size between min and max
         //
 
         if (vs.length < min) {
-            runtimeError("Number of args < "+min)
+            runtimeError("Number of args < " + min)
         }
         if (vs.length > max) {
-            runtimeError("Number of args > "+max)
+            runtimeError("Number of args > " + max)
         }
     }
+}
 
+object InternalOps {
+    import Ops._
+    def operVector (vs: List[Value]) : Value = {
 
+        return new VVector(vs)
+    }
 
+}
+
+object DyadicOps {
+    import Ops._
     def operPlus (vs:List[Value]) : Value = {
 
         checkArgsLength(vs,2,2)
@@ -230,6 +239,34 @@ object Ops {
             return new VVector(v1.getList().map((v:Value) => operPlus(List(v,v2))))
         } else if (v2.isVector() && !(v1.isVector())) {
             return new VVector(v2.getList().map((v:Value) => operPlus(List(v1,v))))
+        } else {
+            runtimeError("cannot add values of different types\n  "+v1+"\n  "+v2)
+        }
+    }
+
+    def operMinus (vs:List[Value]) : Value = {
+
+        checkArgsLength(vs,2,2)
+
+        val v1 = vs(0)
+        val v2 = vs(1)
+
+        if (v1.isInteger() && v2.isInteger()) {
+            return new VInteger(v1.getInt() - v2.getInt())
+        } else if (v1.isVector() && v2.isVector()) {
+            if (v1.getList().length == v2.getList().length) {
+                var result : List[Value] = List()
+                for ((entry1,entry2) <- v1.getList().zip(v2.getList())) {
+                    result = result :+ operMinus(List(entry1,entry2))
+                }
+                return new VVector(result)
+            } else {
+                runtimeError("vectors of different length")
+            }
+        } else if (v1.isVector() && !(v2.isVector())) {
+            return new VVector(v1.getList().map((v:Value) => operMinus(List(v,v2))))
+        } else if (v2.isVector() && !(v1.isVector())) {
+            return new VVector(v2.getList().map((v:Value) => operMinus(List(v1,v))))
         } else {
             runtimeError("cannot add values of different types\n  "+v1+"\n  "+v2)
         }
@@ -346,10 +383,7 @@ object Ops {
         return new VInteger(if (v1.getBool() < v2.getBool()) 1 else 0)
     }
 
-    def operVector (vs: List[Value]) : Value = {
 
-        return new VVector(vs)
-    }
 
 
 
@@ -537,12 +571,14 @@ class SExpParser extends RegexParsers {
     def RP : Parser[Unit] = ")" ^^ { s => () }
     def LB : Parser[Unit] = "[" ^^ { s => () }
     def RB : Parser[Unit] = "]" ^^ { s => () }
-    def PLUS : Parser[Unit] = "+" ^^ { s => () }
-    def TIMES : Parser[Unit] = "*" ^^ { s => () }
     def INT : Parser[Int] = """[0-9]+""".r ^^ { s => s.toInt }
     def IF : Parser[Unit] = "if" ^^ { s => () }
     def ID : Parser[String] = """[a-zA-Z][a-zA-Z0-9]*""".r ^^ { s => s }
     //    def ID : Parser[String] = """[a-zA-Z_+*:.?=<>!|][a-zA-Z0-9_+*:.?=<>!|]*""".r ^^ { s => s }
+
+    def PLUS : Parser[String] = "+" ^^ { s => s }
+    def MINUS : Parser[String] = "-" ^^ { s => s }
+    def TIMES : Parser[String] = "*" ^^ { s => s }
 
     def COND : Parser[Unit] = "cond" ^^ { s => () }
     def AND : Parser[Unit] = "and" ^^ { s => () }
@@ -563,13 +599,7 @@ class SExpParser extends RegexParsers {
 
     // grammar
 
-    def vector : Parser[Exp] =
-        rep(atomic) ^^ {
-            case es =>  if (es.length == 1)
-                es.head
-            else
-                new EApply(new ELiteral(new VPrimOp(Ops.operVector)),es)
-        }
+
 
     def atomic_int : Parser[Exp] = INT ^^ { i => new ELiteral(new VInteger(i)) }
 
@@ -578,6 +608,50 @@ class SExpParser extends RegexParsers {
 
     def atomic : Parser[Exp] =
         ( atomic_int | atomic_id ) ^^ { e => e }
+
+    def vector : Parser[Exp] =
+        rep(atomic) ^^ {
+            case es =>  if (es.length == 1)
+                es.head
+            else
+                new EApply(new ELiteral(new VPrimOp(InternalOps.operVector)),es)
+        }
+
+
+    def MONADIC : Parser[String]  = PLUS ^^ { s => s }
+
+    def DYADIC : Parser[String]  = (PLUS | MINUS | TIMES) ^^ { s => s }
+    //    def INFIX : Parser[Unit] = "infix" ^^ { s => () }
+
+    def pexpr : Parser[Exp] = LP ~ dexpr ~ RP ^^ { case _ ~ e ~ _ => e }
+
+    def mexpr : Parser[Exp] = MONADIC ~ fexpr ^^ {
+        case e1 ~ e2 => e2
+    }
+
+    def expandDexpr(e1: Exp, e2 :List[(String, Exp)]) : Exp = {
+        if (e2.length == 1)
+            new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.head._1))),List(e1, e2.head._2))
+        else {
+            val er = e2.dropRight(1)
+            expandDexpr(e1, e2.dropRight(2) :+ (er.last._1, new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.last._1))), List(er.last._2, e2.last._2))))
+        }
+    }
+
+    def dexpr : Parser[Exp] = fexpr ~ rep(DYADIC ~ fexpr) ^^ {
+        case e ~ Nil => e
+        case e1 ~ e2 => expandDexpr(e1, e2.map(x=> (x._1, x._2)))
+    }
+
+    //    def texpr : Parser[Exp] = fexpr ~ rep( TIMES ~> fexpr ) ^^ {
+    //        case e ~ Nil => e
+    //        case e1 ~ e2 => recursive_times( e1 :: e2 )
+    //    }
+
+    def fexpr : Parser[Exp] = ( vector | pexpr | mexpr ) ^^ { e => e }
+
+    //    def iexpr_infix : Parser[Exp] =
+    //        LP ~ iexpr ~ RP ^^ { case _ ~ _ ~ e ~ _ => e }
 
 
     //
@@ -678,7 +752,7 @@ class SExpParser extends RegexParsers {
     //            { e => e }
 
     def expr : Parser[Exp] =
-        ( vector ) ^^ { e => e }
+        ( dexpr | vector  ) ^^ { e => e }
 
     def expr_entry : Parser[ShellEntry] =
         expr ^^ { e => new SEexpr(e) }
@@ -794,18 +868,26 @@ object Shell {
         ("true",new VInteger(1)),
         ("false",new VInteger(0)),
         ("not", new VRecClosure("",List("a"), new EIf(new EId("a"), new ELiteral(new VInteger(0)), new ELiteral(new VInteger(1))),nullEnv)),
-        ("+", new VPrimOp(Ops.operPlus)),
-        ("*", new VPrimOp(Ops.operTimes)),
-        ("=", new VPrimOp(Ops.operEqual)),
-        ("<", new VPrimOp(Ops.operLess)),
-        ("map", new VPrimOp(Ops.operMap)),
-        ("filter", new VPrimOp(Ops.operFilter)),
-        ("ifempty",new VPrimOp(Ops.operEmpty)),
-        ("first",new VPrimOp(Ops.operFirst)),
-        ("rest",new VPrimOp(Ops.operRest)),
-        ("empty",new VVector(List())),
-        ("cons",new VPrimOp(Ops.operCons)),
+        //        ("+", new VPrimOp(Ops.operPlus)),
+        //        ("*", new VPrimOp(Ops.operTimes)),
+        //        ("=", new VPrimOp(Ops.operEqual)),
+        //        ("<", new VPrimOp(Ops.operLess)),
+        //        ("map", new VPrimOp(Ops.operMap)),
+        //        ("filter", new VPrimOp(Ops.operFilter)),
+        //        ("ifempty",new VPrimOp(Ops.operEmpty)),
+        //        ("first",new VPrimOp(Ops.operFirst)),
+        //        ("rest",new VPrimOp(Ops.operRest)),
+        //        ("empty",new VVector(List())),
+        //        ("cons",new VPrimOp(Ops.operCons)),
     ))
+
+    val dyadicOpt = Map(
+        "+" -> DyadicOps.operPlus _,
+        "-" -> DyadicOps.operMinus _,
+        "*" -> DyadicOps.operTimes _,
+    )
+
+    //    val dyadicEnv = new Env(dyadicOpt.mapValues(x => new VPrimOp(x)).toList)
 
 
     def shell () : Unit = {
