@@ -300,6 +300,23 @@ object DyadicOps {
         }
     }
 
+    def operDivide(vs: List[Value]): Value = {
+        checkArgsLength(vs, 2, 2)
+
+        val v1 = vs(0)
+        val v2 = vs(1)
+        v2.checkInteger()
+        if (v1.isInteger()) {
+            new VInteger(v1.getInt() / v2.getInt())
+        } else if (v1.isVector()){
+            new VVector(v1.getList().map(x => new VInteger(x.getInt() / v2.getInt())))
+        } else {
+            runtimeError("cannot divide " + v1 + " with " + v2)
+        }
+
+
+    }
+
     def operMinus(vs: List[Value]): Value = {
 
         checkArgsLength(vs, 2, 2)
@@ -670,6 +687,8 @@ class SExpParser extends RegexParsers {
     def DOLLAR : Parser[String] = "$" ^^{ s => s }
     def CONTROL : Parser[String] = "#" ^^ { s => s }
     def SUM : Parser[String] = "+/" ^^ { s => s }
+    def PERCENT : Parser[String] = "%" ^^ { s => s }
+    def AT : Parser[String] = "@" ^^ { s => s }
 
     def ASSIGN : Parser[Unit] = "=." ^^ { s => () }
     //    def COND : Parser[Unit] = "cond" ^^ { s => () }
@@ -710,8 +729,29 @@ class SExpParser extends RegexParsers {
 
     def MONADIC : Parser[String]  = ( SUM | MINUS | DOLLAR | CONTROL) ^^ { s => s }
 
-    def DYADIC : Parser[String]  = (PLUS | MINUS | TIMES | DOLLAR) ^^ { s => s }
-    //    def INFIX : Parser[Unit] = "infix" ^^ { s => () }
+    def DYADIC : Parser[List[String]]  = (PLUS | MINUS | TIMES | DOLLAR | PERCENT ) ^^ { s => List(s) }
+
+    def HOOK : Parser[List[String]] = LP ~ DYADIC ~ MONADIC ~ RP ^^ { case _ ~ e1 ~ e2 ~ _ => List(e1.head, e2)}
+
+    def FORK : Parser[List[String]] = LP ~ MONADIC ~ DYADIC ~ MONADIC ~ RP ^^ { case _ ~ e1 ~ e2 ~ e3 ~ _ => List(e1, e2.head, e3)}
+
+    def COMB : Parser[List[String]] = LP ~ MONADIC ~ AT ~ MONADIC ~ RP ^^ { case _ ~ e1 ~ _ ~ e2 ~ _ => List(e1, e2)}
+
+    def mhexpr : Parser[Exp] = HOOK ~ dexpr ^^ {
+        case h ~ e => new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(h(0)))),
+            List(e, new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(h(1)))),List(e))))
+    }
+
+    def mfexpr : Parser[Exp] = FORK ~ dexpr ^^ {
+        case f ~ e => new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(f(1)))),
+            List(new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(f(0)))),List(e)), new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(f(2)))),List(e))))
+    }
+
+    def mcexpr : Parser[Exp] = COMB ~ dexpr ^^ {
+        case f ~ e => new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(f(0)))),
+            List(new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(f(1)))),List(e))))
+    }
+
 
     def pexpr : Parser[Exp] = LP ~ dexpr ~ RP ^^ { case _ ~ e ~ _ => e }
 
@@ -719,13 +759,28 @@ class SExpParser extends RegexParsers {
         case e1 ~ e2 =>  new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(e1))),List(e2))
     }
 
-    def expandDexpr(e1: Exp, e2 :List[(String, Exp)]) : Exp = {
-        if (e2.length == 1)
-            new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.head._1))),List(e1, e2.head._2))
-        else {
-            val er = e2.dropRight(1)
-            expandDexpr(e1, e2.dropRight(2) :+ (er.last._1, new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.last._1))), List(er.last._2, e2.last._2))))
+    def expandDexpr(e1: Exp, e2 :List[(List[String], Exp)]) : Exp = {
+        e2.last._1.length match {
+            case 1 =>
+                if (e2.length == 1)
+                    new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.head._1.head))), List(e1, e2.head._2))
+                else {
+                    val er = e2.dropRight(1)
+                    expandDexpr(e1, e2.dropRight(2) :+ (er.last._1, new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.last._1.head))), List(er.last._2, e2.last._2))))
+                }
+            case 2 =>
+                if (e2.length == 1)
+                    new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.head._1.head))), List(e1,
+                        new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(e2.head._1.last))), List(e2.head._2))
+                    ))
+                else {
+                    val er = e2.dropRight(1)
+                    expandDexpr(e1, e2.dropRight(2) :+ (er.last._1, new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.last._1.head))), List(er.last._2,
+                        new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(e2.head._1.last))), List(e2.last._2))
+                    ))))
+                }
         }
+
     }
 
     def dexpr : Parser[Exp] = fexpr ~ rep(DYADIC ~ fexpr) ^^ {
@@ -733,12 +788,15 @@ class SExpParser extends RegexParsers {
         case e1 ~ e2 => expandDexpr(e1, e2.map(x => (x._1, x._2)))
     }
 
+
+    def fexpr : Parser[Exp] = ( vector | mcexpr | mfexpr | mhexpr | mexpr | pexpr ) ^^ { e => e }
+
+
     //    def texpr : Parser[Exp] = fexpr ~ rep( TIMES ~> fexpr ) ^^ {
     //        case e ~ Nil => e
     //        case e1 ~ e2 => recursive_times( e1 :: e2 )
     //    }
 
-    def fexpr : Parser[Exp] = ( vector | mexpr | pexpr ) ^^ { e => e }
 
     //    def iexpr_infix : Parser[Exp] =
     //        LP ~ iexpr ~ RP ^^ { case _ ~ _ ~ e ~ _ => e }
@@ -981,6 +1039,7 @@ object Shell {
         "-" -> DyadicOps.operMinus _,
         "*" -> DyadicOps.operTimes _,
         "$" -> DyadicOps.operShape _,
+        "%" -> DyadicOps.operDivide _,
     )
 
     val monadicOpt = Map(
@@ -999,7 +1058,7 @@ object Shell {
         var env = stdEnv
 
         while (true) {
-            print("Jala> ")
+            print("JALA> ")
             try {
                 val input = scala.io.StdIn.readLine()
                 val se = if (input == "#debug") new SEexpr(
