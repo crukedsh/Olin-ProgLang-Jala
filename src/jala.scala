@@ -141,9 +141,6 @@ class VVector (val l:List[Value]) extends Value {
     override def getList () : List[Value] = l
 }
 
-class VNoun (override val l: List[Value]) extends VVector(l) {
-
-}
 
 
 class VPrimOp (val oper : (List[Value]) => Value) extends Value {
@@ -175,8 +172,6 @@ class VRecClosure (val self: String, val params: List[String], val body:Exp, val
         return body.eval(new_env)
     }
 }
-
-
 
 //
 //  Primitive operations
@@ -737,6 +732,15 @@ class SExpParser extends RegexParsers {
 
     def COMB : Parser[List[String]] = LP ~ MONADIC ~ AT ~ MONADIC ~ RP ^^ { case _ ~ e1 ~ _ ~ e2 ~ _ => List(e1, e2)}
 
+
+
+
+    def pexpr : Parser[Exp] = LP ~ dexpr ~ RP ^^ { case _ ~ e ~ _ => e }
+
+    def mexpr : Parser[Exp] = MONADIC ~ dexpr ^^ {
+        case e1 ~ e2 =>  new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(e1))),List(e2))
+    }
+
     def mhexpr : Parser[Exp] = HOOK ~ dexpr ^^ {
         case h ~ e => new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(h(0)))),
             List(e, new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(h(1)))),List(e))))
@@ -750,13 +754,6 @@ class SExpParser extends RegexParsers {
     def mcexpr : Parser[Exp] = COMB ~ dexpr ^^ {
         case f ~ e => new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(f(0)))),
             List(new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(f(1)))),List(e))))
-    }
-
-
-    def pexpr : Parser[Exp] = LP ~ dexpr ~ RP ^^ { case _ ~ e ~ _ => e }
-
-    def mexpr : Parser[Exp] = MONADIC ~ dexpr ^^ {
-        case e1 ~ e2 =>  new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(e1))),List(e2))
     }
 
     def expandDexpr(e1: Exp, e2 :List[(List[String], Exp)]) : Exp = {
