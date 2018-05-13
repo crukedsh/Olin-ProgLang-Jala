@@ -387,7 +387,7 @@ object DyadicOps {
         val v1 = vs(0)
         val v2 = vs(1)
         if (v1.isString() && v2.isString()) {
-             new VString(v1.getString().concat(v2.getString()))
+            new VString(v1.getString().concat(v2.getString()))
         } else{
             recCompatibleOper(v1, v2 , (x, y) => new VInteger(x.getInt() + y.getInt()))
         }
@@ -681,7 +681,9 @@ class SExpParser extends RegexParsers {
 
     def HOOK : Parser[List[String]] = LP ~ DYADIC ~ MONADIC ~ RP ^^ { case _ ~ e1 ~ e2 ~ _ => List(e1.head, e2)}
 
-    def FORK : Parser[List[String]] = LP ~ MONADIC ~ DYADIC ~ MONADIC ~ RP ^^ { case _ ~ e1 ~ e2 ~ e3 ~ _ => List(e1, e2.head, e3)}
+    def MONADIC_FORK : Parser[List[String]] = LP ~ MONADIC ~ DYADIC ~ MONADIC ~ RP ^^ { case _ ~ e1 ~ e2 ~ e3 ~ _ => List(e1, e2.head, e3)}
+
+    def DYADIC_FORK : Parser[List[String]] = LP ~ DYADIC ~ DYADIC ~ DYADIC ~ RP ^^ { case _ ~ e1 ~ e2 ~ e3 ~ _ => List(e1.head, e2.head, e3.head)}
 
     def COMB : Parser[List[String]] = LP ~ MONADIC ~ AT ~ MONADIC ~ RP ^^ { case _ ~ e1 ~ _ ~ e2 ~ _ => List(e1, e2)}
 
@@ -696,7 +698,7 @@ class SExpParser extends RegexParsers {
             List(e, new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(h(1)))),List(e))))
     }
 
-    def mfexpr : Parser[Exp] = FORK ~ dexpr ^^ {
+    def mfexpr : Parser[Exp] = MONADIC_FORK ~ dexpr ^^ {
         case f ~ e => new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(f(1)))),
             List(new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(f(0)))),List(e)), new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(f(2)))),List(e))))
     }
@@ -726,11 +728,24 @@ class SExpParser extends RegexParsers {
                         new EApply(new ELiteral(new VPrimOp(Shell.monadicOpt(e2.head._1.last))), List(e2.last._2))
                     ))))
                 }
+            case 3 =>
+                if (e2.length == 1)
+                    new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.head._1(1)))), List(
+                        new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.head._1.head))), List(e1, e2.head._2)),
+                        new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.head._1.last))), List(e1, e2.head._2))
+                    ))
+                else {
+                    val er = e2.dropRight(1)
+                    expandDexpr(e1, e2.dropRight(2) :+ (er.last._1, new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.last._1(1)))), List(
+                        new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.head._1.head))), List(er.last._2, e2.last._2)),
+                        new EApply(new ELiteral(new VPrimOp(Shell.dyadicOpt(e2.head._1.last))), List(er.last._2, e2.last._2))
+                    ))))
+                }
         }
 
     }
 
-    def dexpr : Parser[Exp] = fexpr ~ rep((DYADIC | FORK | HOOK ) ~ fexpr) ^^ {
+    def dexpr : Parser[Exp] = fexpr ~ rep((DYADIC | DYADIC_FORK | HOOK ) ~ fexpr) ^^ {
         case e ~ Nil => e
         case e1 ~ e2 => expandDexpr(e1, e2.map(x => (x._1, x._2)))
     }

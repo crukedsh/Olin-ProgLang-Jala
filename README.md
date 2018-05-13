@@ -13,4 +13,6 @@
     scala Shell
 ```
 
- Actually, intellij is used to develop the project, and we have no idea how to professional build up sbt :flushed:
+ Actually, intellij is used to develop the project, and we currently have no idea how to professionally build up sbt :flushed:
+ 
+ For info, see `doc/`.
