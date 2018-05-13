@@ -213,6 +213,20 @@ object MonadicOps {
 
     import Ops._
 
+    def operRavel(vs: List[Value]): Value = {
+        checkArgsLength(vs, 1, 1)
+        val v = vs.head
+        if (v.isInteger()) return v
+        var ret = List[Value]()
+        def yieldItem(v : Value): Unit = {
+            if (v.isInteger()) ret = ret :+ new VInteger(v.getInt())
+            else if (v.isVector()) for (u <- v.getList()) yieldItem(u)
+            else runtimeError("Wrong ravel")
+        }
+        yieldItem(v)
+        new VVector(ret)
+    }
+
     def operMinus(vs: List[Value]): Value = {
         checkArgsLength(vs, 1, 1)
 
@@ -245,6 +259,36 @@ object MonadicOps {
         shapeOf(vs)
     }
 
+    def operTranspose(vs: List[Value]) : Value = {
+        checkArgsLength(vs, 1, 1)
+        def rank(v: Value): Int = {
+            MonadicOps.operTally(List(MonadicOps.operShapeOf(List(v)))).getInt()
+        }
+        val v = vs.head
+        if (v.isInteger())
+            return v
+        else if (rank(v) == 1) {
+            var res =  List[Value]()
+            for (u <- v.getList())
+                res = res :+ new VVector(List(new VInteger(u.getInt())))
+            new VVector(res)
+        } else if (rank(v) == 2) {
+            val x = MonadicOps.operShapeOf(List(v)).getList()(0).getInt()
+            val y = MonadicOps.operShapeOf(List(v)).getList()(1).getInt()
+
+            var res = List[Value]()
+            for (j <- 0 until y) {
+                var cur = List[Value]()
+                for (i <- 0 until x) {
+                    cur = cur :+ new VInteger(v.getList()(i).getList()(j).getInt())
+                }
+                res = res :+ new VVector(cur)
+            }
+            new VVector(res)
+        } else runtimeError("Bad transpose for  " + v)
+
+    }
+
     def operSum(vs: List[Value]) : Value = {
         checkArgsLength(vs, 1, 1)
         def sumOf(vs: List[Value]): Value = {
@@ -259,45 +303,98 @@ object MonadicOps {
             vs.head
     }
 
+    def operNot(vs: List[Value]) : Value = {
+        checkArgsLength(vs, 1, 1)
+        def recNot(vs: Value) : Value = {
+            if (vs.isVector()) {
+                var ret = List[Value]()
+                for (v <- vs.getList()) ret = ret :+ recNot(v)
+                new VVector(ret)
+            }
+            else if (vs.isBoolean()) if (vs.getBool()) new VInteger(0) else new VInteger(1)
+            else runtimeError("Not operator invalid for " + vs)
+        }
+        recNot(vs.head)
+    }
+
 }
 
 object DyadicOps {
 
+
     import Ops._
 
-    def operPlus(vs: List[Value]): Value = {
+    def operAppend(vs: List[Value]): Value = {
+        def compareList(v1: List[Value], v2:List[Value]): Boolean = {
+            if (v1.isEmpty && v2.isEmpty) true else
+                v1.nonEmpty && v2.nonEmpty && v1.head.getInt() == v2.head.getInt() && compareList(v1.tail, v2.tail)
 
+        }
         checkArgsLength(vs, 2, 2)
-
         val v1 = vs(0)
         val v2 = vs(1)
-
         if (v1.isInteger() && v2.isInteger()) {
-            return new VInteger(v1.getInt() + v2.getInt())
-        } else if (v1.isString() && v2.isString()) {
-            return new VString(v1.getString().concat(v2.getString()))
+            return new VVector(List(v1, v2))
+        }
+        else if (v1.isInteger() && v2.isVector() && v2.getList().head.isInteger()) {
+            return new VVector(v1 :: v2.getList())
+        }
+        else if (v2.isInteger() && v1.isVector() && v1.getList().head.isInteger()) {
+            return new VVector(v1.getList() :+ v2)
+        }
+        else if (v1.isVector() &&  v2.isVector()) {
+            val s1 = MonadicOps.operShapeOf(List(v1)).getList()
+            val s2 = MonadicOps.operShapeOf(List(v2)).getList()
+            if (compareList(s1.tail, s2.tail)) {
+                return new VVector(v1.getList() ::: v2.getList())
+            } else if (compareList(s1.tail, s2)) {
+                return new VVector(v1.getList() :+ v2)
+            } else if (compareList(s2.tail, s1)) {
+                return new VVector(v1 :: v2.getList())
+            } else {
+                runtimeError("Bad append for " + v1 + " and " + v2)
+            }
+        } else {
+            runtimeError("Bad append for " + v1 + " and " + v2)
+        }
+    }
+
+    def recCompatibleOper(v1: Value, v2: Value, oper: (Value, Value) => Value): Value = {
+        if (v1.isInteger() && v2.isInteger()) {
+            return oper(v1, v2)
         } else if (v1.isVector() && v2.isVector()) {
             if (v1.getList().length == v2.getList().length) {
                 var result: List[Value] = List()
                 for ((entry1, entry2) <- v1.getList().zip(v2.getList())) {
-                    result = result :+ operPlus(List(entry1, entry2))
+                    result = result :+ recCompatibleOper(entry1, entry2, oper)
                 }
                 return new VVector(result)
             } else {
                 runtimeError("vectors of different length")
             }
         } else if (v1.isVector() && !(v2.isVector())) {
-            return new VVector(v1.getList().map((v: Value) => operPlus(List(v, v2))))
+            return new VVector(v1.getList().map((v: Value) => recCompatibleOper(v, v2, oper)))
         } else if (v2.isVector() && !(v1.isVector())) {
-            return new VVector(v2.getList().map((v: Value) => operPlus(List(v1, v))))
+            return new VVector(v2.getList().map((v: Value) => recCompatibleOper(v1, v, oper)))
         } else {
-            runtimeError("cannot add values of different types\n  " + v1 + "\n  " + v2)
+            runtimeError("cannot operate values of different types\n  " + v1 + "\n  " + v2)
+        }
+    }
+
+
+    def operPlus(vs: List[Value]): Value = {
+        checkArgsLength(vs, 2, 2)
+        val v1 = vs(0)
+        val v2 = vs(1)
+        if (v1.isString() && v2.isString()) {
+             new VString(v1.getString().concat(v2.getString()))
+        } else{
+            recCompatibleOper(v1, v2 , (x, y) => new VInteger(x.getInt() + y.getInt()))
         }
     }
 
     def operDivide(vs: List[Value]): Value = {
         checkArgsLength(vs, 2, 2)
-
         val v1 = vs(0)
         val v2 = vs(1)
         v2.checkInteger()
@@ -308,38 +405,28 @@ object DyadicOps {
         } else {
             runtimeError("cannot divide " + v1 + " with " + v2)
         }
-
-
     }
 
     def operMinus(vs: List[Value]): Value = {
-
         checkArgsLength(vs, 2, 2)
-
         val v1 = vs(0)
         val v2 = vs(1)
-
-        if (v1.isInteger() && v2.isInteger()) {
-            return new VInteger(v1.getInt() - v2.getInt())
-        } else if (v1.isVector() && v2.isVector()) {
-            if (v1.getList().length == v2.getList().length) {
-                var result: List[Value] = List()
-                for ((entry1, entry2) <- v1.getList().zip(v2.getList())) {
-                    result = result :+ operMinus(List(entry1, entry2))
-                }
-                return new VVector(result)
-            } else {
-                runtimeError("vectors of different length")
-            }
-        } else if (v1.isVector() && !(v2.isVector())) {
-            return new VVector(v1.getList().map((v: Value) => operMinus(List(v, v2))))
-        } else if (v2.isVector() && !(v1.isVector())) {
-            return new VVector(v2.getList().map((v: Value) => operMinus(List(v1, v))))
-        } else {
-            runtimeError("cannot add values of different types\n  " + v1 + "\n  " + v2)
-        }
+        recCompatibleOper(v1, v2, (x, y) => new VInteger(x.getInt() - y.getInt()))
     }
 
+    def operAnd(vs: List[Value]): Value = {
+        checkArgsLength(vs, 2, 2)
+        val v1 = vs(0)
+        val v2 = vs(1)
+        recCompatibleOper(v1, v2, (x, y) => new VInteger( if (x.getBool() & y.getBool()) 1 else 0))
+    }
+
+    def operOr(vs: List[Value]): Value = {
+        checkArgsLength(vs, 2, 2)
+        val v1 = vs(0)
+        val v2 = vs(1)
+        recCompatibleOper(v1, v2, (x, y) => new VInteger( if (x.getBool() | y.getBool()) 1 else 0))
+    }
 
     def operTimes(vs: List[Value]): Value = {
 
@@ -402,134 +489,6 @@ object DyadicOps {
     }
 
 }
-//    def operMap (vs: List[Value]):Value = {
-//
-//        checkArgsLength(vs,2,2)
-//
-//        val vf = vs(0)
-//        val vv = vs(1)
-//
-//        vf.checkFunction()
-//        vv.checkVector()
-//
-//        val l = vv.getList()
-//        return new VVector(l.map((v:Value) => vf.apply(List(v))))
-//    }
-//
-//
-//    def operFilter (vs: List[Value]):Value = {
-//
-//        checkArgsLength(vs,2,2)
-//
-//        val vf = vs(0)
-//        val vv = vs(1)
-//
-//        vf.checkFunction()
-//        vv.checkVector()
-//
-//        def asBool (v:Value) : Boolean = {
-//            if (!v.isBoolean()) {
-//                runtimeError("filter predicate not returning a Boolean")
-//            }
-//            return v.getBool()
-//        }
-//
-//        val l = vv.getList()
-//        return new VVector(l.filter((v:Value) => asBool(vf.apply(List(v)))))
-//    }
-//
-//
-//    def operEqual (vs: List[Value]) : Value = {
-//
-//        checkArgsLength(vs,2,2)
-//
-//        val v1 = vs(0)
-//        val v2 = vs(1)
-//
-//        if (v1.isBoolean() && v2.isBoolean()) {
-//            return new VInteger(if (v1.getBool() == v2.getBool()) 1 else 0)
-//        } else if (v1.isInteger() && v2.isInteger()) {
-//            return new VInteger(if (v1.getInt() == v2.getInt()) 1 else 0)
-//        } else if (v1.isString() && v2.isString()) {
-//            return new VInteger(if (v1.getString() == v2.getString()) 1 else 0)
-//        } else if (v1.isVector() && v2.isVector()) {
-//            if (v1.getList().length == v2.getList().length) {
-//                for ((vv1,vv2) <- v1.getList().zip(v2.getList())) {
-//                    if (!operEqual(List(vv1,vv2)).getBool()) {
-//                        return new VInteger(0)
-//                    }
-//                }
-//                return new VInteger(1)
-//            } else {
-//                return new VInteger(0)
-//            }
-//        } else if (v1.isFunction() && v2.isFunction()) {
-//            return new VInteger(if (v1 == v2) 1 else 0)
-//        } else {
-//            return new VInteger(0)
-//        }
-//    }
-//
-//
-//    def operLess (vs: List[Value]) : Value = {
-//
-//        checkArgsLength(vs,2,2)
-//
-//        val v1 = vs(0)
-//        val v2 = vs(1)
-//        v1.checkInteger()
-//        v2.checkInteger()
-//
-//        return new VInteger(if (v1.getBool() < v2.getBool()) 1 else 0)
-//    }
-//
-//
-//
-//
-//
-//    def operEmpty (vs : List[Value]) : Value = {
-//
-//        checkArgsLength(vs,1,1)
-//        val v = vs(0)
-//        v.checkVector()
-//        return new VInteger(if (v.getList().length == 0) 1 else 0)
-//    }
-//
-//
-//    def operFirst (vs : List[Value]) : Value = {
-//        checkArgsLength(vs,1,1)
-//        val v = vs(0)
-//        v.checkVector()
-//        val l = v.getList()
-//        if (l.length == 0) {
-//            runtimeError("Taking first of an empty vector")
-//        }
-//        return l(0)
-//    }
-//
-//
-//    def operRest (vs : List[Value]) : Value = {
-//        checkArgsLength(vs,1,1)
-//        val v = vs(0)
-//        v.checkVector()
-//        val l = v.getList()
-//        if (l.length == 0) {
-//            runtimeError("Taking rest of an empty vector")
-//        }
-//        return new VVector(l.tail)
-//    }
-//
-//
-//    def operCons (vs : List[Value]) : Value = {
-//        checkArgsLength(vs,2,2)
-//        val item = vs(0)
-//        val vec = vs(1)
-//        vec.checkVector()
-//        return new VVector(item::vec.getList())
-//    }
-//}
-
-
 
 
 //
@@ -667,43 +626,29 @@ class SExpParser extends RegexParsers {
 
     // tokens
 
-    def LP : Parser[Unit] = "(" ^^ { s => () }
-    def RP : Parser[Unit] = ")" ^^ { s => () }
-    def LB : Parser[Unit] = "[" ^^ { s => () }
-    def RB : Parser[Unit] = "]" ^^ { s => () }
+    def LP : Parser[Unit] = "(" ^^ { _ => () }
+    def RP : Parser[Unit] = ")" ^^ { _ => () }
+    def LB : Parser[Unit] = "[" ^^ { _ => () }
+    def RB : Parser[Unit] = "]" ^^ { _ => () }
     def INT : Parser[Int] = """_?[0-9]+""".r ^^ { s => if (s.charAt(0)!='_') s.toInt else -s.substring(1).toInt}
-    //    def IF : Parser[Unit] = "if" ^^ { s => () }
     def ID : Parser[String] = """[a-zA-Z][a-zA-Z0-9]*""".r ^^ { s => s }
-    //    def ID : Parser[String] = """[a-zA-Z_+*:.?=<>!|][a-zA-Z0-9_+*:.?=<>!|]*""".r ^^ { s => s }
 
     def PLUS : Parser[String] = "+" ^^ { s => s }
+    def AND : Parser[String] = "+." ^^ { s => s }
     def MINUS : Parser[String] = "-" ^^ { s => s }
+    def NOT : Parser[String] = "-." ^^ { s => s }
     def TIMES : Parser[String] = "*" ^^ { s => s }
+    def OR : Parser[String] = "*." ^^ { s => s }
     def DOLLAR : Parser[String] = "$" ^^{ s => s }
+    def COMMA : Parser[String] = "," ^^ { s => s }
     def CONTROL : Parser[String] = "#" ^^ { s => s }
     def SUM : Parser[String] = "+/" ^^ { s => s }
     def PERCENT : Parser[String] = "%" ^^ { s => s }
     def AT : Parser[String] = "@" ^^ { s => s }
+    def TRANSPOSE: Parser[String] = "|:" ^^ { s => s }
 
     def ASSIGN : Parser[Unit] = "=." ^^ { s => () }
-    //    def COND : Parser[Unit] = "cond" ^^ { s => () }
-    //    def AND : Parser[Unit] = "and" ^^ { s => () }
-    //    def OR : Parser[Unit] = "or" ^^ { s => () }
-    //    def LET : Parser[Unit] = "let" ^^ { s => () }
-    //    def FUN : Parser[Unit] = "fun" ^^ { s => () }
-    //    def BAR : Parser[Unit] = "|" ^^ { s => () }
-    //    def GETS : Parser[Unit] = "<-" ^^ { s => () }
-
-    //    def DEFINE : Parser[Unit] = "define" ^^ { s => () }
-    //    def DEFUN : Parser[Unit] = "defun" ^^ { s => () }
-
-
-
-    //    def STRING : Parser[String] = "\"" ~ """[^"]*""".r ~ "\"" ^^ { case _ ~ s ~ _ => s }
-
     // grammar
-
-
 
     def atomic_int : Parser[Exp] = INT ^^ { i => new ELiteral(new VInteger(i)) }
 
@@ -721,19 +666,24 @@ class SExpParser extends RegexParsers {
                 new EApply(new ELiteral(new VPrimOp(InternalOps.operVector)),es)
         }
 
+    def DOUBLY_MONADIC : Parser[String]  = ( NOT | SUM | TRANSPOSE ) ^^ { s => s }
 
-    def MONADIC : Parser[String]  = ( SUM | MINUS | DOLLAR | CONTROL) ^^ { s => s }
+    def SINGLY_MONADIC : Parser[String]  = ( MINUS | DOLLAR | CONTROL | COMMA) ^^ { s => s }
 
-    def DYADIC : Parser[List[String]]  = (PLUS | MINUS | TIMES | DOLLAR | PERCENT ) ^^ { s => List(s) }
+    def MONADIC : Parser[String]  = ( DOUBLY_MONADIC | SINGLY_MONADIC ) ^^ { s => s }
+
+    def DOUBLY_DYADIC : Parser[String]  = ( AND | OR ) ^^ { s => s }
+
+    def SINGLY_DYADIC : Parser[String]  = ( PLUS | MINUS | TIMES | DOLLAR | PERCENT | COMMA) ^^ { s => s }
+
+    // Parse to List[String] to fit verb train
+    def DYADIC : Parser[List[String]]  = ( DOUBLY_DYADIC | SINGLY_DYADIC ) ^^ { s => List(s) }
 
     def HOOK : Parser[List[String]] = LP ~ DYADIC ~ MONADIC ~ RP ^^ { case _ ~ e1 ~ e2 ~ _ => List(e1.head, e2)}
 
     def FORK : Parser[List[String]] = LP ~ MONADIC ~ DYADIC ~ MONADIC ~ RP ^^ { case _ ~ e1 ~ e2 ~ e3 ~ _ => List(e1, e2.head, e3)}
 
     def COMB : Parser[List[String]] = LP ~ MONADIC ~ AT ~ MONADIC ~ RP ^^ { case _ ~ e1 ~ _ ~ e2 ~ _ => List(e1, e2)}
-
-
-
 
     def pexpr : Parser[Exp] = LP ~ dexpr ~ RP ^^ { case _ ~ e ~ _ => e }
 
@@ -780,121 +730,13 @@ class SExpParser extends RegexParsers {
 
     }
 
-    def dexpr : Parser[Exp] = fexpr ~ rep(DYADIC ~ fexpr) ^^ {
+    def dexpr : Parser[Exp] = fexpr ~ rep((DYADIC | FORK | HOOK ) ~ fexpr) ^^ {
         case e ~ Nil => e
         case e1 ~ e2 => expandDexpr(e1, e2.map(x => (x._1, x._2)))
     }
 
 
     def fexpr : Parser[Exp] = ( vector | mcexpr | mfexpr | mhexpr | mexpr | pexpr ) ^^ { e => e }
-
-
-    //    def texpr : Parser[Exp] = fexpr ~ rep( TIMES ~> fexpr ) ^^ {
-    //        case e ~ Nil => e
-    //        case e1 ~ e2 => recursive_times( e1 :: e2 )
-    //    }
-
-
-    //    def iexpr_infix : Parser[Exp] =
-    //        LP ~ iexpr ~ RP ^^ { case _ ~ _ ~ e ~ _ => e }
-
-
-    //
-    //    def atomic_string : Parser[Exp] = STRING ^^ { s => new ELiteral(new VString(s))}
-    //
-
-    //
-    //    def atomic : Parser[Exp] =
-    //        ( atomic_int | atomic_id | atomic_string ) ^^ { e => e }
-    //
-    //    def expr_if : Parser[Exp] =
-    //        LP ~ IF ~ expr ~ expr ~ expr ~ RP ^^
-    //            { case _ ~ _ ~ e1 ~ e2 ~ e3 ~ _ => new EIf(e1,e2,e3) }
-    //
-    //    def expr_map : Parser[Exp] =
-    //        LB ~ expr ~ BAR ~ ID ~ GETS ~ expr ~ RB ^^
-    //            { case _ ~ e1 ~ _ ~ id ~ _ ~ e2 ~ _ =>
-    //                new EApply(new ELiteral(new VPrimOp(Ops.operMap)),List(new EFunction(List(id),e1), e2)) }
-    //
-    //    def expr_mapfilter : Parser[Exp] =
-    //        LB ~ expr ~ BAR ~ ID ~ GETS ~ expr ~ BAR ~ expr ~ RB ^^
-    //            { case _ ~ e1 ~ _ ~ id ~ _ ~ e2 ~ _ ~ e3 ~ _ =>
-    //                new EApply(new ELiteral(new VPrimOp(Ops.operMap)),
-    //                    List(new EFunction(List(id),e1),
-    //                        new EApply(new ELiteral(new VPrimOp(Ops.operFilter)),
-    //                            List(new EFunction(List(id),e3),
-    //                                e2)))) }
-    //
-    //    def expr_vec : Parser[Exp] =
-    //        LB ~ rep(expr) ~ RB ^^ {
-    //            case _ ~ es ~ _ => new EApply(new ELiteral(new VPrimOp(Ops.operVector)),es)
-    //        }
-    //
-    //    def key_value : Parser[(Exp, Exp)] =
-    //        LP ~ expr ~ expr ~ RP ^^ { case _ ~ k ~ v ~ _ => (k, v) }
-    //
-    //
-    //    def expr_fun : Parser[Exp] =
-    //        LP ~ FUN ~ LP ~ rep(ID) ~ RP ~ expr ~ RP ^^
-    //            { case _ ~ _ ~ _ ~ params ~ _ ~ e ~ _ => new EFunction(params,e) }
-    //
-    //    def expr_funr : Parser[Exp] =
-    //        LP ~ FUN ~ ID ~ LP ~ rep(ID) ~ RP ~ expr ~ RP ^^
-    //            { case _ ~ _ ~ self ~ _ ~ params ~ _ ~ e ~ _ => new ERecFunction(self,params,e) }
-    //
-    //    def expr_app : Parser[Exp] =
-    //        LP ~ expr ~ rep(expr) ~ RP ^^ { case _ ~ ef ~ eargs ~ _ => new EApply(ef,eargs) }
-    //
-    //    def andTokens(es : List[Exp]) : Exp = es match {
-    //        // here
-    //        //     case e1 :: Nil => e1
-    //        // is also okay
-    //        // just to fit the result of #parse (and true false)
-    //        case e1 :: Nil => new EIf(e1, new ELiteral(
-    //            new VInteger(1)), new ELiteral(new VInteger(0)))
-    //        case e1 :: e2 => new EIf(e1, andTokens(e2), new ELiteral(new VInteger(0)))
-    //        case Nil => throw new Exception("Empty Boolean expression for and")
-    //    }
-    //
-    //    def expr_and : Parser[Exp] =
-    //        LP ~ AND ~ rep(expr) ~ RP ^^ { case _ ~ _ ~ es ~ _ => andTokens(es) }
-    //
-    //    def orTokens(es : List[Exp]) : Exp = es match {
-    //        case e1 :: Nil => new EIf(e1, new ELiteral(
-    //            new VInteger(1)), new ELiteral(new VInteger(0)))
-    //        case e1 :: e2 => new EIf(e1, new ELiteral(new VInteger(1)), orTokens(e2))
-    //        case Nil => throw new Exception("Empty Boolean expression for or")
-    //    }
-    //
-    //    def expr_or : Parser[Exp] =
-    //        LP ~ OR ~ rep(expr) ~ RP ^^ { case _ ~ _ ~ es ~ _ => orTokens(es) }
-    //
-    //    def binding : Parser[(String, Exp)] =
-    //        LP ~ ID ~ expr ~ RP ^^ { case _ ~ id ~ e ~ _ => (id, e) }
-    //
-    //    def expr_let : Parser[Exp] =
-    //        LP ~ LET ~ LP ~ rep(binding) ~ RP ~ expr ~ RP ^^ {
-    //            case _ ~ _ ~ _ ~ wrap ~ _ ~ e ~ _ =>
-    //                val (pars, efs) = wrap.unzip
-    //                new EApply(new EFunction(pars, e), efs)
-    //        }
-    //
-    //    def cond : Parser[(Exp, Exp)] =
-    //        LP ~ expr ~ expr ~ RP ^^ { case _ ~ e1 ~ e2 ~ _ => (e1, e2) }
-    //
-    //    def condTokens(es : List[(Exp, Exp)]) : Exp = es match {
-    //        case (e1, e2) :: Nil => new EIf(e1, e2, new ELiteral(new VNone))
-    //        case (e1, e2) :: e3 => new EIf(e1, e2, condTokens(e3))
-    //        case Nil => throw new Exception("Empty Boolean expression for cond")
-    //    }
-    //
-    //    def expr_cond : Parser[Exp] =
-    //        LP ~ COND ~ rep(cond) ~ RP ^^ {case _ ~ _ ~ es ~ _ => condTokens(es) }
-    //
-    //    def expr : Parser[Exp] =
-    //        ( atomic | expr_if | expr_map | expr_mapfilter | expr_vec |
-    //            expr_fun | expr_funr | expr_let | expr_and | expr_or | expr_cond | expr_app) ^^
-    //            { e => e }
 
     def expr : Parser[Exp] =
         ( dexpr ) ^^ { e => e }
@@ -908,16 +750,6 @@ class SExpParser extends RegexParsers {
         expr ^^ { e => new SEexpr(e) }
 
 
-    //    def define_entry : Parser[ShellEntry] =
-    //        LP ~ DEFINE ~ ID ~ expr ~ RP ^^ {
-    //            case _ ~ _ ~ id ~ e ~ _ => new SEdefine(id, e)
-    //        }
-    //
-    //    def defun_entry : Parser[ShellEntry] =
-    //        LP ~ DEFUN ~ ID ~ LP ~ rep(ID) ~ RP ~ expr ~ RP ^^ {
-    //            case _ ~ _ ~ fid ~ _ ~ ids ~ _ ~ e ~ _ =>
-    //                new SEdefine(fid, new ERecFunction(fid, ids, e))
-    //        }
 
     def quit_entry : Parser[ShellEntry] =
         "quit" ^^ { case _ => new SEquit() }
@@ -968,7 +800,6 @@ class SEexpr (e:Exp) extends ShellEntry {
 class SEdefine(id : String, e : Exp) extends ShellEntry {
     override def processEntry(env: Env): Env = {
         val v = e.eval(env)
-        println(id + " defined")
         return env.push(id, v)
     }
 }
@@ -1000,8 +831,8 @@ object Shell {
     val parser = new SExpParser
 
     def parse (input:String) : ShellEntry = {
-
-        parser.parseAll(parser.shell_entry, input) match {
+        val code = input.replaceFirst("NB[.].*", "")
+        parser.parseAll(parser.shell_entry, code) match {
             case parser.Success(result,_) => result
             case failure : parser.NoSuccess => throw new Exception("Cannot parse "+input+": "+failure.msg)
         }
@@ -1018,17 +849,7 @@ object Shell {
         ("true",new VInteger(1)),
         ("false",new VInteger(0)),
         ("not", new VRecClosure("",List("a"), new EIf(new EId("a"), new ELiteral(new VInteger(0)), new ELiteral(new VInteger(1))),nullEnv)),
-        //        ("+", new VPrimOp(Ops.operPlus)),
-        //        ("*", new VPrimOp(Ops.operTimes)),
-        //        ("=", new VPrimOp(Ops.operEqual)),
-        //        ("<", new VPrimOp(Ops.operLess)),
-        //        ("map", new VPrimOp(Ops.operMap)),
-        //        ("filter", new VPrimOp(Ops.operFilter)),
-        //        ("ifempty",new VPrimOp(Ops.operEmpty)),
-        //        ("first",new VPrimOp(Ops.operFirst)),
-        //        ("rest",new VPrimOp(Ops.operRest)),
-        //        ("empty",new VVector(List())),
-        //        ("cons",new VPrimOp(Ops.operCons)),
+
     ))
 
     val dyadicOpt = Map(
@@ -1037,13 +858,19 @@ object Shell {
         "*" -> DyadicOps.operTimes _,
         "$" -> DyadicOps.operShape _,
         "%" -> DyadicOps.operDivide _,
+        "+." -> DyadicOps.operOr _,
+        "*." -> DyadicOps.operAnd _,
+        "," -> DyadicOps.operAppend _,
     )
 
     val monadicOpt = Map(
         "-" -> MonadicOps.operMinus _,
         "#" -> MonadicOps.operTally _,
         "$" -> MonadicOps.operShapeOf _,
-        "+/" -> MonadicOps.operSum _
+        "+/" -> MonadicOps.operSum _,
+        "-." -> MonadicOps.operNot _,
+        "," -> MonadicOps.operRavel _,
+        "|:" -> MonadicOps.operTranspose _,
     )
 
 
@@ -1078,4 +905,5 @@ object Shell {
     }
 
 }
+
 
